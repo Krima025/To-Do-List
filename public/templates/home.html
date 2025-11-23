@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TaskSync: Task Management</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0d0d0d; color: #e0e0e0; min-height: 100vh; overflow: hidden; }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1a1a1a; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
+
+        /* Layout */
+        .app-layout { display: flex; height: 100vh; width: 100vw; overflow: hidden; }
+        
+        /* Sidebar */
+        .sidebar { 
+            background-color: #161616; 
+            border-right: 1px solid #292929; 
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1); 
+            width: 280px; 
+            z-index: 50; 
+            flex-shrink: 0;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        /* Main Content */
+        .main-content { 
+            flex-grow: 1; 
+            padding: 2rem 3rem; 
+            overflow-y: auto; 
+            height: 100%; 
+            position: relative;
+        }
+        
+        .card { background-color: #1a1a1a; border: 1px solid #292929; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5); border-radius: 16px; }
+        
+        /* Mobile Utilities */
+        @media (max-width: 1023px) { 
+            .sidebar { position: fixed; inset: 0; right: auto; width: 280px; z-index: 50; transform: translateX(-100%); } 
+            .sidebar.open { transform: translateX(0); box-shadow: 0 0 50px rgba(0,0,0,0.5); }
+            .main-content { padding: 1rem; } 
+            #overlay { display: none; } 
+        }
+
+        /* Calendar Styles */
+        .day-cell { 
+            height: 100px; 
+            background-color: #1a1a1a; 
+            border: 1px solid #292929; 
+            border-radius: 8px; 
+            padding: 4px; 
+            transition: all 0.2s; 
+            cursor: pointer; 
+            display: flex; 
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .day-cell:hover { background-color: #252525; border-color: #444; }
+        .day-cell.today { border: 2px solid #6366f1; background-color: #1e1b2e; }
+
+        /* Modal */
+        .modal-overlay { backdrop-filter: blur(4px); z-index: 100; }
+        
+        /* Login Page Background */
+        .home-container { background-image: radial-gradient(#1a1a1a 1px, transparent 1px); background-size: 24px 24px; height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 2rem; background-color: #0d0d0d; }
+        .google-btn { background-color: #4285F4; transition: all 0.2s; }
+        .google-btn:hover { background-color: #357ae8; transform: translateY(-1px); }
+    </style>
+</head>
+<body>
+
+    <!-- DATA ISLANDS -->
+    <script id="data-tasks" type="application/json">{{ initial_tasks | default([]) | tojson | safe }}</script>
+    <script id="data-labels" type="application/json">{{ initial_labels | default([]) | tojson | safe }}</script>
+    <script id="data-session" type="application/json">{{ session_data | default({'isAuthenticated': False}) | tojson | safe }}</script>
+
+    <div id="app-root" class="h-full w-full"></div>
+
+    <!-- Modal Template -->
+    <div id="task-modal" class="modal-overlay fixed inset-0 bg-black/80 hidden flex items-center justify-center p-4">
+        <div class="bg-[#1a1a1a] w-full max-w-md p-6 rounded-2xl border border-[#333] shadow-2xl transform transition-all">
+            <div class="flex justify-between items-center mb-6 border-b border-[#333] pb-4">
+                <h3 id="modal-title" class="text-xl font-bold text-white">Add New Task</h3>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
+            </div>
+            
+            <form id="task-form" class="space-y-5">
+                <input type="hidden" id="task-id">
+                
+                <div>
+                    <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Task Name</label>
+                    <input type="text" id="task-title" required class="w-full p-3 rounded-xl bg-[#252525] border border-[#444] text-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none transition-all" placeholder="e.g. Update client report">
+                </div>
+
+                <!-- ADD THIS NEW BLOCK BELOW THE INPUT -->
+                <div id="suggestion-display" class="hidden text-sm pt-1 pb-2"></div>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Date</label>
+                        <input type="date" id="task-date" required class="w-full p-3 rounded-xl bg-[#252525] border border-[#444] text-white focus:border-indigo-500 outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Time</label>
+                        <input type="time" id="task-time" class="w-full p-3 rounded-xl bg-[#252525] border border-[#444] text-white focus:border-indigo-500 outline-none">
+                    </div>
+                </div>
+                
+                <div>
+                    <label class="block text-xs uppercase font-bold text-gray-500 mb-1">Label</label>
+                    <div class="relative">
+                        <select id="task-label" required class="w-full p-3 rounded-xl bg-[#252525] border border-[#444] text-white focus:border-indigo-500 outline-none appearance-none cursor-pointer">
+                            <!-- Options injected by JS -->
+                        </select>
+                        <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none">
+                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="flex justify-end gap-3 pt-4">
+                    <button type="button" onclick="closeModal()" class="px-4 py-2 bg-transparent border border-gray-600 text-gray-300 rounded-xl hover:bg-gray-800 transition-colors text-sm font-medium">Cancel</button>
+                    <button type="button" id="delete-button" onclick="deleteTask()" class="px-4 py-2 bg-red-500/10 border border-red-900 text-red-500 rounded-xl hover:bg-red-900/20 transition-colors hidden text-sm font-medium">Delete</button>
+                    <button type="submit" id="save-button" class="px-6 py-2 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-900/30 text-sm">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // --- INIT ---
+        let currentEditingTaskId = null;
+        let tasks = [], labels = [], session = { isAuthenticated: false, user: null };
+        try {
+            const tEl = document.getElementById('data-tasks');
+            const lEl = document.getElementById('data-labels');
+            const sEl = document.getElementById('data-session');
+            if (tEl && tEl.textContent.trim()) tasks = JSON.parse(tEl.textContent);
+            if (lEl && lEl.textContent.trim()) labels = JSON.parse(lEl.textContent);
+            if (sEl && sEl.textContent.trim()) session = JSON.parse(sEl.textContent);
+            // FIX: If labels is not provided by the server (e.g. guest), initialize with defaults
+            if(!labels || labels.length === 0) labels = ["Projects", "Works", "School", "Others", "Unlabeled"];
+        } catch(e) { console.error("Data Init Error", e); }
+
+        // --- COLORS ---
+        const BASE_COLORS = [
+            {bg:"bg-blue-500/20", text: "text-blue-400", border: "border-blue-500/30", dot: "bg-blue-500", chart:"#3B82F6"},
+            {bg:"bg-orange-500/20", text: "text-orange-400", border: "border-orange-500/30", dot: "bg-orange-500", chart:"#F97316"},
+            {bg:"bg-emerald-500/20", text: "text-emerald-400", border: "border-emerald-500/30", dot: "bg-emerald-500", chart:"#10B981"},
+            {bg:"bg-red-500/20", text: "text-red-400", border: "border-red-500/30", dot: "bg-red-500", chart:"#EF4444"},
+            {bg:"bg-purple-500/20", text: "text-purple-400", border: "border-purple-500/30", dot: "bg-purple-500", chart:"#A855F7"},
+            {bg:"bg-pink-500/20", text: "text-pink-400", border: "border-pink-500/30", dot: "bg-pink-500", chart:"#EC4899"},
+            {bg:"bg-yellow-500/20", text: "text-yellow-400", border: "border-yellow-500/30", dot: "bg-yellow-500", chart:"#EAB308"},
+            {bg:"bg-cyan-500/20", text: "text-cyan-400", border: "border-cyan-500/30", dot: "bg-cyan-500", chart:"#06B6D4"},
+            {bg:"bg-lime-500/20", text: "text-lime-400", border: "border-lime-500/30", dot: "bg-lime-500", chart:"#84CC16"},
+            {bg:"bg-fuchsia-500/20", text: "text-fuchsia-400", border: "border-fuchsia-500/30", dot: "bg-fuchsia-500", chart:"#E879F9"},
+        ];
+        
+        function getLabelColor(labelName) {
+            if (!labelName) return BASE_COLORS[0];
+            const index = labels.indexOf(labelName);
+            if (index === -1) {
+                const hashIndex = Math.abs(labelName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)) % BASE_COLORS.length;
+                return BASE_COLORS[hashIndex];
+            }
+            return BASE_COLORS[index % BASE_COLORS.length];
+        }
+
+        let currentView = 'Dashboard'; 
+        let currentLabel = labels[0] || 'Projects';
+        let currentCalendarDate = new Date();
+        let selectedDate = null;
+        
+        const appRoot = document.getElementById('app-root');
+        const modal = document.getElementById('task-modal');
+        const form = document.getElementById('task-form');
+
+        // --- API ACTIONS ---
+        async function apiSaveTask(taskData) {
+            const res = await fetch('/api/task', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(taskData) });
+            if(res.ok) {
+                const newTask = await res.json();
+                if(taskData.id) { const idx = tasks.findIndex(t => t.id === taskData.id); if(idx!==-1) tasks[idx] = newTask; }
+                else tasks.push(newTask);
+                
+                // FIX: Update Calendar View if active
+                if (currentView === 'Calendar' && selectedDate) viewDayTasks(selectedDate);
+                else updateView();
+                
+                return true;
+            }
+            return false;
+        }
+
+        async function apiAddLabel(name) {
+            const res = await fetch('/api/labels', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({name}) });
+            if(res.ok) {
+                const newLabel = await res.json();
+                labels.push(newLabel.name);
+                renderAppLayout(); // FIX: Re-render layout to show new label in sidebar
+            } else { alert('Label already exists'); }
+        }
+
+        async function apiDeleteLabel(name) {
+            if(!confirm(`Delete label '${name}'?`)) return;
+            const res = await fetch(`/api/labels/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if(res.ok) {
+                // FIX 1: Remove label locally
+                labels = labels.filter(l => l !== name);
+                
+                // FIX 2: Update tasks locally (label set to Unlabeled)
+                tasks = tasks.map(t => t.label === name ? {...t, label: 'Unlabeled'} : t);
+
+                // FIX 3: Reset view
+                if(currentLabel === name) setView('Dashboard');
+                else renderAppLayout(); 
+            }
+        }
+
+        // --- GLOBAL FUNCTIONS ---
+        window.setView = (view, label) => { 
+            currentView = view; 
+            if(label) currentLabel = label; 
+            if (window.innerWidth < 1024) toggleSidebar(false);
+            updateView(); 
+        };
+        
+        window.toggleSidebar = (forceState) => { 
+            const sb = document.getElementById('sidebar');
+            const overlay = document.getElementById('overlay');
+            if (!sb || !overlay) return; 
+            if (forceState === false) {
+                sb.classList.remove('open');
+                overlay.classList.add('hidden');
+            } else if (forceState === true) {
+                sb.classList.add('open');
+                overlay.classList.remove('hidden');
+            } else {
+                sb.classList.toggle('open');
+                overlay.classList.toggle('hidden');
+            }
+        };
+        
+        window.triggerLogout = () => { window.location.href = "/logout"; };
+        
+        window.addCustomLabel = () => {
+            const name = prompt("Enter new label name:");
+            if(name && name.trim() !== "") apiAddLabel(name.trim());
+        };
+        
+        window.changeMonth = (delta) => {
+            currentCalendarDate.setMonth(currentCalendarDate.getMonth() + delta);
+            selectedDate = null;
+            updateView();
+        };
+        window.goToToday = () => {
+            currentCalendarDate = new Date();
+            selectedDate = null;
+            updateView();
+        };
+
+        // NEW: Function to render task list below the calendar for a selected day
+        window.viewDayTasks = (dateStr) => {
+            selectedDate = dateStr;
+            const dayTasks = tasks.filter(t => t.date === dateStr);
+            const container = document.getElementById('day-details-container');
+            
+            // Highlight selected cell
+            document.querySelectorAll('.day-cell').forEach(el => el.classList.remove('ring-2', 'ring-indigo-500'));
+            const selectedCell = document.getElementById(`day-${dateStr}`);
+            if(selectedCell) selectedCell.classList.add('ring-2', 'ring-indigo-500');
+
+            if(!container) return;
+            
+            let html = `
+                <div class="mt-8 pt-8 border-t border-[#292929] pb-10">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-xl font-bold text-white">Tasks for ${new Date(dateStr).toLocaleDateString(undefined, {weekday:'long', month:'long', day:'numeric'})}</h3>
+                        <button onclick="openModal('add', null, '${dateStr}')" class="px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors shadow-lg">Add Task</button>
+                    </div>
+                    <div class="space-y-2">
+            `;
+            const tasksHtml = dayTasks.map(getTaskHtml).join('');
+            if (dayTasks.length === 0) { html += `<p class="text-gray-500 italic">No tasks scheduled for this day.</p>`; } 
+            else { html += tasksHtml; }
+            html += `</div></div>`;
+            container.innerHTML = html;
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        };
+        
+        window.openModal = (mode, task, date) => {
+            modal.classList.remove('hidden');
+            const select = document.getElementById('task-label');
+            select.innerHTML = labels.map(l => `<option value="${l}" class="bg-[#1a1a1a] text-white">${l}</option>`).join('');
+            
+            if (mode === 'edit' && task) {
+                document.getElementById('task-id').value = task.id;
+                document.getElementById('task-title').value = task.title;
+                currentEditingTaskId = task.id;
+                document.getElementById('task-date').value = task.date;
+                document.getElementById('task-time').value = task.time;
+                select.value = task.label;
+                document.getElementById('delete-button').classList.remove('hidden');
+                document.getElementById('modal-title').textContent = "Edit Task";
+            } else {
+                form.reset();
+                document.getElementById('task-id').value = '';
+                document.getElementById('task-date').value = date || new Date().toISOString().split('T')[0];
+                document.getElementById('delete-button').classList.add('hidden');
+                document.getElementById('modal-title').textContent = "Add New Task";
+            }
+        };
+        window.closeModal = () => modal.classList.add('hidden');
+
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const data = {
+                id: document.getElementById('task-id').value ? parseInt(document.getElementById('task-id').value) : null,
+                title: document.getElementById('task-title').value,
+                date: document.getElementById('task-date').value,
+                time: document.getElementById('task-time').value,
+                label: document.getElementById('task-label').value
+            };
+            apiSaveTask(data).then(() => closeModal());
+        });
+
+ async function deleteTask(taskId) {
+    // 1. If no ID is passed, try to use the one we saved earlier
+    if (!taskId || taskId === 'undefined') {
+        taskId = currentEditingTaskId;
+    }
+
+    // 2. DEBUG: Check if we have it now
+    if (!taskId) {
+        alert("Error: Still no Task ID found! (currentEditingTaskId is empty)");
+        return;
+    }
+
+    if(!confirm("Are you sure you want to delete this task?")) return;
+
+    try {
+        const response = await fetch(`/api/task/${taskId}/delete`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            // Success! Reload the page to see changes.
+            window.location.reload(); 
+        } else {
+            alert("Server failed to delete task.");
+        }
+    } catch (error) {
+        console.error("Error:", error);
+    }
+}
+
+        window.toggleTaskCompletion = async (id) => {
+            const task = tasks.find(t => t.id === id);
+            if (!task) return;
+            task.completed = !task.completed;
+            if(currentView === 'Calendar' && selectedDate) viewDayTasks(selectedDate);
+            else updateView();
+            await fetch(`/api/task/${id}/toggle`, { method: 'POST' });
+        };
+
+        // --- RENDERERS ---
+        function renderHomeView() {
+            appRoot.innerHTML = `
+                <div class="min-h-screen flex flex-col justify-center items-center p-6 bg-[#0d0d0d] bg-[radial-gradient(#1a1a1a_1px,transparent_1px)] [background-size:24px_24px]">
+                    <div class="max-w-md w-full bg-[#1a1a1a] p-8 md:p-12 rounded-3xl text-center border border-[#292929] shadow-2xl">
+                        <div class="flex justify-center mb-6">
+                            <svg class="w-16 h-16 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                        </div>
+                        <h1 class="text-4xl md:text-5xl font-extrabold text-white mb-4 tracking-tight">TaskSync</h1>
+                        <p class="text-lg text-gray-400 mb-8">Your workflow, simplified.</p>
+                        <div class="space-y-3">
+                            <a href="/login/google" class="w-full flex items-center justify-center space-x-3 px-6 py-3.5 bg-[#4285F4] hover:bg-[#3367D6] text-white font-semibold rounded-xl transition-all shadow-lg hover:scale-[1.02] active:scale-95">
+                                <svg class="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12.24 10.285V14.4h6.806c-.275 1.765-2.056 5.174-6.806 5.174-4.095 0-7.439-3.389-7.439-7.574s3.345-7.574 7.439-7.574c2.33 0 3.891.989 4.785 1.849l3.254-3.138C18.189 1.186 15.479 0 12.24 0c-6.635 0-12 5.365-12 12s5.365 12 12 12c6.926 0 11.52-4.869 11.52-11.726 0-.788-.085-1.39-.189-1.989H12.24z"/></svg>
+                                <span>Sign in with Google</span>
+                            </a>
+                            <a href="/guest" class="w-full block px-6 py-3.5 bg-[#252525] hover:bg-[#333] text-gray-300 font-semibold rounded-xl transition-all hover:scale-[1.02] active:scale-95 text-center">Continue as Guest</a>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function renderAppLayout() {
+            const userNameInitial = (session.user && session.user.name) ? session.user.name[0].toUpperCase() : 'U';
+            const userName = (session.user && session.user.name) ? session.user.name : 'Guest';
+            const userEmail = (session.user && session.user.email) ? session.user.email : '';
+            
+            appRoot.innerHTML = `
+                <div class="app-layout flex flex-col lg:flex-row relative">
+                    <!-- Overlay (Mobile) -->
+                    <div id="overlay" class="fixed inset-0 bg-black/80 z-40 hidden lg:hidden backdrop-blur-sm transition-opacity duration-300" onclick="toggleSidebar(false)"></div>
+                    
+                    <!-- Sidebar -->
+                    <div id="sidebar" class="sidebar fixed lg:static inset-y-0 left-0 bg-[#161616] border-r border-[#222] w-[280px] z-50 flex flex-col p-6 transform -translate-x-full lg:translate-x-0 h-full">
+                        <!-- LOGO -->
+                        <div class="flex items-center space-x-2 mb-8 px-2">
+                             <svg class="w-8 h-8 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                            <span class="text-2xl font-extrabold text-white tracking-tight">TaskSync</span>
+                        </div>
+
+                        <!-- USER PROFILE (Clickable for Profile View) -->
+                        <div onclick="setView('Profile')" class="mb-6 px-3 py-3 bg-[#1a1a1a] rounded-xl border border-[#252525] cursor-pointer hover:bg-[#222] transition-colors">
+                            <div class="flex items-center space-x-3">
+                                <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold shadow-lg">${userNameInitial}</div>
+                                <div class="overflow-hidden">
+                                    <p class="text-sm font-bold text-white truncate">${userName}</p>
+                                    <p class="text-xs text-gray-500 truncate" title="${userEmail}">${userEmail}</p>
+                                </div>
+                            </div>
+                        </div>
+
+                        <nav class="flex-grow space-y-1 overflow-y-auto pr-1">
+                            <a href="#" onclick="setView('Dashboard')" class="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#252525] transition-colors ${currentView === 'Dashboard' ? 'bg-[#252525] text-white' : ''}">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+                                <span>Dashboard</span>
+                            </a>
+                            <a href="#" onclick="setView('Calendar')" class="flex items-center space-x-3 px-3 py-2.5 rounded-lg text-gray-400 hover:text-white hover:bg-[#252525] transition-colors ${currentView === 'Calendar' ? 'bg-[#252525] text-white' : ''}">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                <span>Calendar</span>
+                            </a>
+                            
+                            <div class="pt-8 pb-2 px-3 flex justify-between items-center group">
+                                <span class="text-xs uppercase font-bold text-gray-500 tracking-wider">LABELS</span>
+                                <button onclick="addCustomLabel()" class="text-gray-400 hover:text-white hover:bg-[#333] w-6 h-6 flex items-center justify-center rounded transition-colors" title="Add Label">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                                </button>
+                            </div>
+                            
+                            <div class="space-y-0.5">
+                                ${labels.map(l => {
+                                    const color = getLabelColor(l);
+                                    return `
+                                    <a href="#" onclick="setView('Label', '${l}')" class="flex items-center space-x-3 px-3 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-[#252525] transition-colors group ${currentView === 'Label' && currentLabel === l ? 'bg-[#252525] text-white' : ''}">
+                                        <span class="w-2.5 h-2.5 rounded-full ${color.dot} group-hover:shadow-[0_0_8px_rgba(255,255,255,0.3)] transition-shadow"></span>
+                                        <span class="truncate">${l}</span>
+                                    </a>`;
+                                }).join('')}
+                            </div>
+                        </nav>
+                    </div>
+
+                    <div class="main-content flex-1 flex flex-col h-screen w-full relative">
+                        <!-- Mobile Header -->
+                        <div class="flex lg:hidden justify-between items-center p-4 border-b border-[#222] bg-[#161616] sticky top-0 z-20">
+                            <button onclick="toggleSidebar(true)" class="text-white p-2 rounded-lg hover:bg-[#252525]">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                            </button>
+                            <div class="flex items-center space-x-2">
+                                <svg class="w-5 h-5 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                                <span class="text-lg font-bold text-white">TaskSync</span>
+                            </div>
+                            <!-- Mobile Avatar Profile Button -->
+                            <div onclick="setView('Profile')" class="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-lg cursor-pointer">${userNameInitial}</div>
+                        </div>
+
+                        <!-- Desktop Header Button -->
+                        <div class="hidden lg:flex justify-end p-6 md:p-8 pb-0">
+                            <button onclick="triggerLogout()" class="text-sm text-red-400 hover:text-red-300 font-medium transition-colors flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-red-500/10">
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                                Logout
+                            </button>
+                        </div>
+                        
+                        <!-- Scrollable Content -->
+                        <div id="view-container" class="flex-1 overflow-y-auto p-4 md:p-8 pb-20 w-full"></div>
+                    </div>
+                </div>`;
+            updateView();
+        }
+
+        function updateView() {
+            const container = document.getElementById('view-container');
+            if(!container) return; 
+            
+            if(currentView === 'Dashboard') renderDashboard(container);
+            else if(currentView === 'Calendar') renderCalendarView(container);
+            else if(currentView === 'Label') renderLabelDashboard(currentLabel, container);
+            else if(currentView === 'Profile') renderProfileView(container); 
+        }
+
+        function renderProfileView(container) {
+            const userNameInitial = (session.user && session.user.name) ? session.user.name[0].toUpperCase() : 'U';
+            container.innerHTML = `
+                <div class="max-w-lg mx-auto mt-8">
+                    <div class="bg-[#1a1a1a] border border-[#333] rounded-3xl overflow-hidden shadow-2xl">
+                        <div class="h-32 bg-gradient-to-r from-indigo-600 to-purple-600 opacity-80 relative"></div>
+                        
+                        <div class="px-8 pb-8 relative text-center">
+                            <div class="w-28 h-28 mx-auto -mt-14 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white text-4xl font-bold border-4 border-[#1a1a1a] shadow-xl mb-4">
+                                ${userNameInitial}
+                            </div>
+                            
+                            <h2 class="text-3xl font-bold text-white mb-1">${session.user.name}</h2>
+                            <p class="text-gray-400 mb-8">${session.user.email}</p>
+                            
+                            <div class="grid grid-cols-2 gap-4 mb-8">
+                                <div class="bg-[#252525] p-4 rounded-2xl border border-[#333]"><span class="block text-3xl font-bold text-indigo-400">${tasks.length}</span><span class="text-xs text-gray-500 uppercase tracking-wider font-bold">Total Tasks</span></div>
+                                <div class="bg-[#252525] p-4 rounded-2xl border border-[#333]"><span class="block text-3xl font-bold text-green-400">${tasks.filter(t => t.completed).length}</span><span class="text-xs text-gray-500 uppercase tracking-wider font-bold">Completed</span></div>
+                            </div>
+
+                            <button onclick="triggerLogout()" class="w-full py-3.5 px-6 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/50 rounded-xl font-semibold transition-all flex items-center justify-center gap-2 group">
+                                <svg class="w-5 h-5 group-hover:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                                Sign Out
+                            </button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        function getTaskHtml(task) {
+            const color = getLabelColor(task.label || 'Unlabeled');
+            const taskJson = JSON.stringify(task).replace(/"/g, '&quot;');
+            return `
+                <div class="flex items-center p-4 bg-[#1a1a1a] border border-[#292929] rounded-xl mb-3 hover:border-[#444] transition-all group ${task.completed ? 'opacity-50' : ''}">
+                    <input type="checkbox" onclick="toggleTaskCompletion(${task.id})" ${task.completed ? 'checked' : ''} class="w-5 h-5 accent-indigo-500 rounded-md cursor-pointer border-gray-600 bg-[#252525] transition-all shrink-0">
+                    <div class="flex-grow ml-4 cursor-pointer min-w-0" onclick="openModal('edit', ${taskJson})">
+                        <p class="font-medium text-gray-200 ${task.completed ? 'line-through text-gray-500' : ''} truncate">${task.title}</p>
+                        <p class="text-xs text-gray-500 mt-0.5 flex items-center gap-2"><span>📅 ${task.date}</span>${task.time ? `<span>⏰ ${task.time}</span>` : ''}</p>
+                    </div>
+                    <span class="hidden sm:inline-block text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md ${color.bg} ${color.text} border ${color.border} shrink-0 ml-2">${task.label}</span>
+                </div>`;
+        }
+
+        function renderDashboard(container) {
+            
+            // Map for ML Predicted Priority Scoring (Secondary Sort Factor)
+            const PRIORITY_SCORE_MAP = { 'High': 3, 'Medium': 2, 'Low': 1 };
+            
+            // 1. Calculate time remaining and urgency state for all incomplete tasks
+            const incompleteTasks = tasks.filter(t => !t.completed).map(t => {
+                const deadlineStr = `${t.date} ${t.time || '00:00'}`;
+                const deadline = new Date(deadlineStr);
+                const now = new Date();
+                
+                // Difference in minutes (negative means overdue)
+                const timeDiffMinutes = (deadline.getTime() - now.getTime()) / 60000;
+                
+                return {
+                    ...t,
+                    timeDiffMinutes: timeDiffMinutes,
+                    isOverdue: timeDiffMinutes < 0
+                };
+            });
+            
+            const completedTasks = tasks.filter(t => t.completed);
+
+            // 2. Perform Multi-Level Sorting
+            incompleteTasks.sort((a, b) => {
+                const aIsOverdue = a.isOverdue;
+                const bIsOverdue = b.isOverdue;
+                
+                // Compare ML scores (used as a tertiary tie-breaker)
+                const scoreA = PRIORITY_SCORE_MAP[a.ai_priority] || 0;
+                const scoreB = PRIORITY_SCORE_MAP[b.ai_priority] || 0;
+
+                // --- Level 1: Overdue vs. Upcoming ---
+                if (aIsOverdue && !bIsOverdue) return -1; // A (Overdue) comes before B
+                if (!aIsOverdue && bIsOverdue) return 1;  // B (Overdue) comes before A
+
+                // --- Level 2: Sorting Within the Same Group ---
+                
+                if (aIsOverdue && bIsOverdue) {
+                    // Both Overdue: Most negative (most delayed) comes first (e.g., -500 min > -100 min)
+                    if (a.timeDiffMinutes < b.timeDiffMinutes) return -1;
+                    if (a.timeDiffMinutes > b.timeDiffMinutes) return 1;
+                } else {
+                    // Both Upcoming: Smallest positive (due soonest) comes first
+                    if (a.timeDiffMinutes < b.timeDiffMinutes) return -1;
+                    if (a.timeDiffMinutes > b.timeDiffMinutes) return 1;
+                }
+                
+                // --- Level 3: AI Priority Tie-breaker ---
+                return scoreB - scoreA; // High > Medium > Low
+            });
+
+            // 3. Combine lists
+            const tasksToRender = incompleteTasks.concat(completedTasks);
+
+            container.innerHTML = `
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 md:gap-8">
+                    <!-- Overview Card -->
+                    <div class="card p-6 rounded-2xl h-fit">
+                        <h3 class="text-lg font-bold text-white mb-6">Task Overview</h3>
+                        <div class="h-56 flex items-center justify-center relative"><canvas id="chart"></canvas>
+                            <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"><span class="text-3xl font-bold text-white">${tasks.filter(t=>!t.completed).length}</span><span class="text-xs text-gray-500 uppercase tracking-wide">Pending</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Tasks & Quick Add -->
+                    <div class="lg:col-span-2 space-y-6 md:space-y-8">
+                        <div class="card p-1.5 rounded-2xl bg-[#1a1a1a] border border-[#333]">
+                            <form id="quick-add-form" onsubmit="handleQuickAdd(event)" class="flex items-center w-full">
+                                <input id="qa-title" type="text" placeholder="What needs to be done?" required class="flex-grow p-3 bg-transparent text-white placeholder-gray-500 focus:outline-none min-w-0">
+                                <div class="h-6 w-px bg-gray-700 mx-2 hidden sm:block"></div>
+                                <select id="qa-label" class="bg-transparent text-sm text-gray-400 focus:outline-none cursor-pointer hover:text-white transition-colors mr-2 max-w-[100px]">
+                                    ${labels.map(l=>`<option value="${l}" class="bg-[#1a1a1a] text-white">${l}</option>`).join('')}
+                                </select>
+                                <button type="submit" class="p-2.5 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-900/20 shrink-0"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg></button>
+                            </form>
+                        </div>
+
+                        <div>
+                            <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold text-white">My Tasks</h2><span class="text-xs text-gray-500 bg-[#252525] px-2 py-1 rounded-md">${tasks.length} Total</span></div>
+                            <div class="space-y-1">
+                                ${tasksToRender.length ? tasksToRender.map(getTaskHtml).join('') : '<div class="text-center py-12 border-2 border-dashed border-[#292929] rounded-xl"><p class="text-gray-500">No tasks added yet</p></div>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            
+            // Chart Logic (Unchanged)
+            const ctx = document.getElementById('chart').getContext('2d');
+            const chartData = labels.map(l => tasks.filter(t => t.label === l && !t.completed).length);
+            const hasData = chartData.some(val => val > 0);
+            if (window.myChart) window.myChart.destroy();
+            if (hasData) {
+                window.myChart = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: { labels: labels, datasets: [{ data: chartData, backgroundColor: labels.map(l=>getLabelColor(l).chart), borderWidth: 0, hoverOffset: 4 }] },
+                    options: { cutout: '75%', responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+                });
+            } else { document.getElementById('chart').parentNode.innerHTML = '<div class="text-center text-gray-600 flex items-center justify-center h-full"><p>Add tasks to see stats</p></div>'; }
+
+            window.handleQuickAdd = (e) => {
+                e.preventDefault();
+                apiSaveTask({ title: document.getElementById('qa-title').value, label: document.getElementById('qa-label').value || labels[0], date: new Date().toISOString().split('T')[0], user_priority: 'Medium' }).then(()=>{ document.getElementById('qa-title').value = ''; });
+            };
+        }
+        function renderLabelDashboard(label, container) {
+            const filtered = tasks.filter(t => t.label === label);
+            const color = getLabelColor(label);
+            const safeLabel = label.replace(/'/g, "\\'");
+            container.innerHTML = `
+                <div class="flex items-center justify-between mb-8"><div class="flex items-center gap-3"><span class="w-3 h-3 rounded-full ${color.dot} shadow-[0_0_12px_${color.chart}]"></span><h2 class="text-3xl font-bold text-white">${label}</h2></div><button onclick="if(confirm('Delete label ${safeLabel}?')) apiDeleteLabel('${safeLabel}')" class="text-xs text-red-500 hover:underline">Delete Label</button></div>
+                <div class="space-y-1">${filtered.length ? filtered.map(getTaskHtml).join('') : '<div class="text-center py-12 border-2 border-dashed border-[#292929] rounded-xl"><p class="text-gray-500">No tasks added yet</p></div>'}</div>
+                <button onclick="openModal('add', null, null, '${safeLabel}')" class="fixed bottom-8 right-8 w-14 h-14 bg-indigo-600 rounded-full text-white text-3xl shadow-xl shadow-indigo-900/40 flex items-center justify-center transition-all hover:scale-110 hover:bg-indigo-500 z-40">+</button>
+            `;
+        }
+
+        function renderCalendarView(container) {
+            const now = currentCalendarDate;
+            const month = now.getMonth();
+            const year = now.getFullYear();
+            const firstDay = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const monthNames = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+            
+            let html = `
+                <div class="flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
+                    <h2 class="text-2xl md:text-3xl font-bold text-white">${monthNames[month]} ${year}</h2>
+                    <div class="flex gap-2">
+                        <button onclick="changeMonth(-1)" class="p-2 bg-[#1a1a1a] rounded-lg border border-[#333] hover:bg-[#252525] transition-colors text-gray-400 hover:text-white"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg></button>
+                        <button onclick="goToToday()" class="px-4 bg-indigo-600 text-white text-sm font-bold rounded-lg hover:bg-indigo-700 transition-colors">Today</button>
+                        <button onclick="changeMonth(1)" class="p-2 bg-[#1a1a1a] rounded-lg border border-[#333] hover:bg-[#252525] transition-colors text-gray-400 hover:text-white"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg></button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-7 gap-1 mb-2 text-center text-[10px] sm:text-xs font-bold text-gray-500 uppercase tracking-wider"><div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div></div>
+                <div class="grid grid-cols-7 gap-1">
+            `;
+            
+            for (let i = 0; i < firstDay; i++) html += `<div class="p-2 bg-[#111] border border-[#1a1a1a] rounded-lg opacity-50 min-h-[80px] sm:min-h-[100px]"></div>`;
+            
+            for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                const isToday = new Date().toISOString().split('T')[0] === dateStr;
+                const dayTasks = tasks.filter(t => t.date === dateStr);
+                
+                html += `
+                    <div id="day-${dateStr}" onclick="viewDayTasks('${dateStr}')" class="day-cell min-h-[80px] sm:min-h-[100px] bg-[#1a1a1a] border ${isToday ? 'border-indigo-500' : 'border-[#292929]'} rounded-lg p-1 sm:p-2 hover:bg-[#252525] transition-colors cursor-pointer relative group overflow-hidden">
+                        <div class="flex justify-between items-start mb-1">
+                            <span class="text-xs sm:text-sm font-bold ${isToday ? 'text-indigo-400' : 'text-gray-400'}">${day}</span>
+                            ${dayTasks.length > 0 ? `<span class="text-[10px] bg-[#252525] text-gray-400 px-1.5 rounded hidden sm:inline-block">${dayTasks.length}</span>` : ''}
+                        </div>
+                        <div class="space-y-1">
+                            ${dayTasks.map(t => {
+                                const color = getLabelColor(t.label);
+                                return `<div onclick="event.stopPropagation(); openModal('edit', ${JSON.stringify(t).replace(/"/g, '&quot;')})" class="text-[10px] truncate px-1.5 py-0.5 rounded ${color.bg} ${color.text} hover:opacity-80 transition-opacity">${t.title}</div>`;
+                            }).join('')}
+                        </div>
+                        <div class="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity text-gray-500 font-bold text-lg">+</div>
+                    </div>
+                `;
+            }
+            html += `</div>`;
+            html += `<div id="day-details-container"></div>`;
+            container.innerHTML = html;
+        }
+
+        async function apiDeleteLabel(name) {
+            const res = await fetch(`/api/labels/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if(res.ok) {
+                labels = labels.filter(l => l !== name);
+                if(currentLabel === name) setView('Dashboard');
+                else renderAppLayout(); 
+            }
+        }
+        // NEW: Function to call the AI endpoint
+        // --- GEMINI SUGGESTION LOGIC ---
+        let suggestionTimeout = null;
+        
+        async function handleTimeSuggestion() {
+            const title = document.getElementById('task-title');
+            const display = document.getElementById('suggestion-display');
+            const timeInput = document.getElementById('task-time');
+            
+            // Check API Key status
+            const keyCheck = await fetch('/api/check-api-key').then(res => res.json());
+            if (!keyCheck.key_present) {
+                display.classList.remove('hidden');
+                display.innerHTML = `<span class="text-red-400">AI Suggestion requires API Key in todo.py.</span>`;
+                return;
+            }
+            apiKeyPresent = keyCheck.key_present;
+
+            if (title.value.trim().length < 5 || timeInput.value) {
+                display.classList.add('hidden');
+                return;
+            }
+
+            if (suggestionTimeout) clearTimeout(suggestionTimeout);
+            display.classList.remove('hidden');
+            display.innerHTML = `<span class="text-indigo-400 font-semibold">AI is thinking...</span>`;
+
+            suggestionTimeout = setTimeout(async () => {
+                const res = await fetch('/api/suggest-time', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title: title.value.trim() })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.error) {
+                        display.innerHTML = `<span class="text-red-400">AI Failed: ${data.error}</span>`;
+                        return;
+                    }
+                    const certaintyClass = data.certainty === 'High' ? 'text-emerald-400' : 'text-yellow-400';
+                    
+                    display.innerHTML = `
+                        <span class="${certaintyClass} font-bold">AI Suggests: ${data.time_string}</span> 
+                        <span class="text-gray-500 text-xs">(${data.certainty} Certainty)</span>
+                        <a href="#" onclick="event.preventDefault(); applySuggestion('${data.minutes}');" 
+                           class="text-xs text-indigo-400 hover:text-white ml-2 underline transition cursor-pointer">Use It</a>
+                    `;
+                } else {
+                    display.innerHTML = `<span class="text-red-400">Failed to reach AI server.</span>`;
+                }
+            }, 700);
+        }
+        
+        window.applySuggestion = (minutes) => {
+            const timeInput = document.getElementById('task-time');
+            const dateInput = document.getElementById('task-date');
+            const display = document.getElementById('suggestion-display');
+
+            const minutesInt = parseInt(minutes);
+
+            if (minutesInt > 0) {
+                const now = new Date();
+                now.setMinutes(now.getMinutes() + minutesInt); 
+                
+                const newDateStr = now.toISOString().split('T')[0];
+                const newTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+                
+                dateInput.value = newDateStr;
+                timeInput.value = newTimeStr;
+            }
+            
+            display.classList.add('hidden');
+            document.getElementById('task-label').focus();
+        };
+        // --- Add event listener to trigger AI suggestion ---
+        window.onload = () => { 
+            if (session.isAuthenticated) {
+                renderAppLayout();
+                // Attach listener to task title input when the modal is shown
+                const titleInput = document.getElementById('task-title');
+                if (titleInput) {
+                    titleInput.addEventListener('input', debounce(handleTimeSuggestion, 1000));
+                }
+            } else { 
+                renderHomeView(); 
+            }
+        };
+
+        // NEW: Debounce utility to prevent API spamming
+        function debounce(func, delay) {
+            let timeoutId;
+            return function(...args) {
+                clearTimeout(timeoutId);
+                timeoutId = setTimeout(() => func.apply(this, args), delay);
+            };
+        }
+    </script>
+</body>
+</html>
