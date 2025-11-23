@@ -51,7 +51,8 @@ db = SQLAlchemy(app)
 # --- FIX FOR RENDER DATABASE ---
 with app.app_context():
     db.create_all()
-
+    print("--- DEBUG: Database Tables Created Successfully ---")
+    
 # --- 2. AUTHENTICATION SETUP ---
 login_manager = LoginManager()
 login_manager.init_app(app)
