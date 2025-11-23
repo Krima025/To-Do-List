@@ -283,10 +283,13 @@ def create_task():
         db.session.add(new_task)
         db.session.commit()
         
-        # Trigger re-train after adding a new data point
-        train_and_save_model(current_user.id, current_user.tasks) 
-        
-        return jsonify(new_task.to_dict()), 201
+        try:
+            train_and_save_model(current_user.id, current_user.tasks)
+        except Exception as e:
+            print(f"--- WARNING: AI Training Failed (Task still saved): {e} ---")
+    # ------------------------------------
+    
+    return jsonify(new_task.to_dict()), 201
 
 # --- PASTE THIS INTO YOUR PYTHON FILE ---
 
