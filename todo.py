@@ -3,7 +3,8 @@ import json
 import numpy as np
 import joblib
 from dotenv import load_dotenv 
-load_dotenv() 
+load_dotenv()
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, render_template, redirect, url_for, request, session, jsonify, has_request_context, make_response
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, logout_user, current_user, login_required
@@ -18,7 +19,13 @@ from flask_dance.contrib.google import make_google_blueprint, google
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
-app = Flask(__name__)
+app = Flask(__name__) # You already have this line
+
+# --- ADD THESE LINES TO FIX THE LOGIN LOOP ---
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+# ---------------------------------------------
 app.secret_key = os.getenv("FLASK_SECRET_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -41,6 +48,9 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_path
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+# --- FIX FOR RENDER DATABASE ---
+with app.app_context():
+    db.create_all()
 
 # --- 2. AUTHENTICATION SETUP ---
 login_manager = LoginManager()
