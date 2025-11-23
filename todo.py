@@ -49,10 +49,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 # --- FIX FOR RENDER DATABASE ---
-with app.app_context():
-    db.create_all()
-    print("--- DEBUG: Database Tables Created Successfully ---")
-    
+
 # --- 2. AUTHENTICATION SETUP ---
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -103,6 +100,9 @@ class Task(db.Model):
             'user_priority': self.user_priority,
             'ai_priority': self.ai_priority
         }
+with app.app_context():
+    db.create_all()
+    print("--- DEBUG: Database Tables Created Successfully ---")
 
 @login_manager.user_loader
 def load_user(user_id):
