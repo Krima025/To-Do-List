@@ -332,8 +332,9 @@ def index():
             'user': {'name': current_user.name, 'email': current_user.email}
         }
         # Tasks are automatically fetched with new priority fields
-        initial_tasks = [t.to_dict() for t in current_user.tasks]
-    
+        # Only show tasks that are NOT completed
+        initial_tasks = [t.to_dict() for t in current_user.tasks if not t.completed]   
+         
     elif session.get('is_guest'):
         labels = DEFAULT_LABELS
         session_data = {
